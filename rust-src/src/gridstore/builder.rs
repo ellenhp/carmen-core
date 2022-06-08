@@ -182,9 +182,9 @@ impl GridStoreBuilder {
 
     /// Writes data to disk.
     pub fn finish(self) -> Result<(), Error> {
-        let db = Connection::open(&self.path)?;
-        db.execute("CREATE TABLE blobs(key BLOB, value BLOB) IF NOT EXISTS;", [])?;
-        db.execute("CREATE UNIQUE INDEX unique_key ON blobs (key) IF NOT EXISTS", [])?;
+        let db = Connection::open(&self.path.join("db.sqlite"))?;
+        db.execute("CREATE TABLE IF NOT EXISTS blobs(key BLOB, value BLOB);", [])?;
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS unique_key ON blobs (key);", [])?;
 
         let mut db_key: Vec<u8> = Vec::with_capacity(MAX_KEY_LENGTH);
 
@@ -239,8 +239,8 @@ impl GridStoreBuilder {
             "~BOUNDS".as_bytes(), &encoded_boundaries
         ])?;
 
-        db.execute("pragma journal_mode = delete;", [])?;
-        db.execute("pragma page_size = 16384;", [])?;
+        // db.execute("pragma journal_mode = delete;", [])?;
+        // db.execute("pragma page_size = 16384;", [])?;
         db.execute("vacuum;", [])?;
 
         Ok(())

@@ -274,7 +274,7 @@ impl GridStore {
         bboxes: Vec<[u16; 4]>,
         max_score: f64,
     ) -> Result<Self, Error> {
-        let db = Connection::open(&path)?;
+        let db = Connection::open(&path.as_ref().join("db.sqlite"))?;
 
         let db_bounds: Result<Vec<u8>> = db.query_row(
             "SELECT key, value FROM blobs WHERE key = ?;",
