@@ -351,7 +351,7 @@ impl GridStore {
         range_key.write_start_to(fetch_type_marker, &mut db_key)?;
 
         let mut stream_query =
-            self.db.prepare("SELECT key, value FROM blobs WHERE key >= ? ORDER BY key;")?;
+            self.db.prepare("SELECT key, value FROM blobs WHERE key >= ? ORDER BY key ASC;")?;
         let db_iter = stream_query
             .query_map([&db_key], |row| Ok(KV { key: row.get(0)?, value: row.get(1)? }))?;
 
@@ -402,7 +402,7 @@ impl GridStore {
 
     pub fn keys<'i>(&'i self) -> impl Iterator<Item = Result<GridKey, Error>> + 'i {
         let mut stream_query =
-            self.db.prepare("SELECT key, value FROM blobs ORDER BY key;").unwrap();
+            self.db.prepare("SELECT key, value FROM blobs ORDER BY key ASC;").unwrap();
         let db_iter = stream_query
             .query_map([], |row| Ok(KV { key: row.get(0)?, value: row.get(1)? }))
             .unwrap();
@@ -410,6 +410,9 @@ impl GridStore {
         for kv_result in db_iter {
             let kv = kv_result.unwrap();
             let key = kv.key.clone();
+            if key[0] != 0 {
+                break;
+            }
             let phrase_id = (&key[1..]).read_u32::<BigEndian>().unwrap();
 
             let key_lang_partial = &key[5..];
