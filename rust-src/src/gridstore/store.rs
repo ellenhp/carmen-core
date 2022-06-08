@@ -9,7 +9,7 @@ use itertools::Itertools;
 use min_max_heap::MinMaxHeap;
 use morton::deinterleave_morton;
 use ordered_float::OrderedFloat;
-use rocksdb::{Direction, IteratorMode, Options, DB};
+use rusqlite::{Connection, Result};
 use serde::Serialize;
 
 use crate::gridstore::common::*;
@@ -19,7 +19,7 @@ use crate::gridstore::spatial;
 #[derive(Debug, Serialize)]
 pub struct GridStore {
     #[serde(skip_serializing)]
-    db: DB,
+    db: Connection,
     #[serde(skip_serializing)]
     pub bin_boundaries: HashSet<u32>,
     pub path: PathBuf,
@@ -250,6 +250,11 @@ impl<T: Iterator<Item = MatchEntry>> PartialEq for QueueElement<T> {
     }
 }
 
+struct KV {
+    key: Vec<u8>,
+    value: Vec<u8>,
+}
+
 impl<T: Iterator<Item = MatchEntry>> Eq for QueueElement<T> {}
 
 impl GridStore {
@@ -269,14 +274,15 @@ impl GridStore {
         bboxes: Vec<[u16; 4]>,
         max_score: f64,
     ) -> Result<Self, Error> {
-        let path = path.as_ref().to_owned();
-        let mut opts = Options::default();
-        opts.set_read_only(true);
-        opts.set_allow_mmap_reads(true);
-        let db = DB::open(&opts, &path)?;
+        let db = Connection::open(&path)?;
 
-        let bin_boundaries: HashSet<u32> = match db.get("~BOUNDS")? {
-            Some(entry) => {
+        let db_bounds: Result<Vec<u8>> = db.query_row(
+            "SELECT key, value FROM blobs WHERE key = ?;",
+            ["~BOUNDS".as_bytes()],
+            |row| row.get(1),
+        );
+        let bin_boundaries: HashSet<u32> = match db_bounds {
+            Ok(entry) => {
                 let encoded_boundaries: &[u8] = entry.as_ref();
                 encoded_boundaries
                     .chunks(4)
@@ -289,13 +295,13 @@ impl GridStore {
                     })
                     .collect()
             }
-            None => HashSet::new(),
+            Err(_) => HashSet::new(),
         };
 
         Ok(GridStore {
             db,
-            path,
             bin_boundaries,
+            path: path.as_ref().to_path_buf(),
             zoom,
             type_id,
             coalesce_radius,
@@ -309,9 +315,14 @@ impl GridStore {
         let mut db_key: Vec<u8> = Vec::new();
         key.write_to(TypeMarker::SinglePhrase, &mut db_key)?;
 
-        Ok(match self.db.get(&db_key)? {
-            Some(value) => Some(decode_value(value)),
-            None => None,
+        let result: Result<Vec<u8>> =
+            self.db.query_row("SELECT key, value FROM blobs WHERE key = ?;", [db_key], |row| {
+                row.get(1)
+            });
+
+        Ok(match result {
+            Ok(value) => Some(decode_value(value)),
+            Err(_) => None,
         })
     }
 
@@ -339,17 +350,25 @@ impl GridStore {
         let mut db_key: Vec<u8> = Vec::new();
         range_key.write_start_to(fetch_type_marker, &mut db_key)?;
 
-        let db_iter = self
-            .db
-            .iterator(IteratorMode::From(&db_key, Direction::Forward))
-            .take_while(|(k, _)| range_key.matches_key(fetch_type_marker, k).unwrap());
+        let mut stream_query =
+            self.db.prepare("SELECT key, value FROM blobs WHERE key >= ? ORDER BY key;")?;
+        let db_iter = stream_query
+            .query_map([&db_key], |row| Ok(KV { key: row.get(0)?, value: row.get(1)? }))?;
 
         let mut pri_queue = MinMaxHeap::<QueueElement<_>>::new();
 
-        for (key, value) in db_iter {
-            let matches_language = match_key.matches_language(&key).unwrap();
-            let mut entry_iter =
-                decode_matching_value(value, &match_opts, matches_language, self.coalesce_radius);
+        for kv_result in db_iter {
+            let kv = kv_result.unwrap();
+            if !range_key.matches_key(fetch_type_marker, &kv.key).unwrap() {
+                break;
+            }
+            let matches_language = match_key.matches_language(&kv.key).unwrap();
+            let mut entry_iter = decode_matching_value(
+                kv.value,
+                &match_opts,
+                matches_language,
+                self.coalesce_radius,
+            );
             if let Some(next_entry) = entry_iter.next() {
                 let queue_element = QueueElement { next_entry, entry_iter };
                 if pri_queue.len() >= max_values {
@@ -382,9 +401,16 @@ impl GridStore {
     }
 
     pub fn keys<'i>(&'i self) -> impl Iterator<Item = Result<GridKey, Error>> + 'i {
-        let db_iter = self.db.iterator(IteratorMode::Start);
-        db_iter.take_while(|(key, _)| key[0] == 0).map(|(key, _)| {
-            let phrase_id = (&key[1..]).read_u32::<BigEndian>()?;
+        let mut stream_query =
+            self.db.prepare("SELECT key, value FROM blobs ORDER BY key;").unwrap();
+        let db_iter = stream_query
+            .query_map([], |row| Ok(KV { key: row.get(0)?, value: row.get(1)? }))
+            .unwrap();
+        let mut collection = Vec::<Result<GridKey, Error>>::new();
+        for kv_result in db_iter {
+            let kv = kv_result.unwrap();
+            let key = kv.key.clone();
+            let phrase_id = (&key[1..]).read_u32::<BigEndian>().unwrap();
 
             let key_lang_partial = &key[5..];
             let lang_set: u128 = if key_lang_partial.len() == 0 {
@@ -394,19 +420,28 @@ impl GridStore {
                 let mut key_lang_full = [0u8; 16];
                 key_lang_full[(16 - key_lang_partial.len())..].copy_from_slice(key_lang_partial);
 
-                (&key_lang_full[..]).read_u128::<BigEndian>()?
+                (&key_lang_full[..]).read_u128::<BigEndian>().unwrap()
             };
 
-            Ok(GridKey { phrase_id, lang_set })
-        })
+            collection.push(Ok(GridKey { phrase_id, lang_set }));
+        }
+        collection.into_iter()
     }
 
     pub fn iter<'i>(
         &'i self,
     ) -> impl Iterator<Item = Result<(GridKey, Vec<GridEntry>), Error>> + 'i {
-        let db_iter = self.db.iterator(IteratorMode::Start);
-        db_iter.take_while(|(key, _)| key[0] == 0).map(|(key, value)| {
-            let phrase_id = (&key[1..]).read_u32::<BigEndian>()?;
+        let mut stream_query =
+            self.db.prepare("SELECT key, value FROM blobs ORDER BY key;").unwrap();
+        let db_iter = stream_query
+            .query_map([], |row| Ok(KV { key: row.get(0)?, value: row.get(1)? }))
+            .unwrap();
+        let mut collection = Vec::<Result<(GridKey, Vec<GridEntry>), Error>>::new();
+        for kv_result in db_iter {
+            let kv = kv_result.unwrap();
+            let key = kv.key.clone();
+            let value = kv.value.clone();
+            let phrase_id = (&key[1..]).read_u32::<BigEndian>().unwrap();
 
             let key_lang_partial = &key[5..];
             let lang_set: u128 = if key_lang_partial.len() == 0 {
@@ -416,12 +451,13 @@ impl GridStore {
                 let mut key_lang_full = [0u8; 16];
                 key_lang_full[(16 - key_lang_partial.len())..].copy_from_slice(key_lang_partial);
 
-                (&key_lang_full[..]).read_u128::<BigEndian>()?
+                (&key_lang_full[..]).read_u128::<BigEndian>().unwrap()
             };
 
             let entries: Vec<_> = decode_value(value).collect();
 
-            Ok((GridKey { phrase_id, lang_set }, entries))
-        })
+            collection.push(Ok((GridKey { phrase_id, lang_set }, entries)));
+        }
+        collection.into_iter()
     }
 }

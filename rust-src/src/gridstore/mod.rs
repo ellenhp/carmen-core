@@ -458,13 +458,7 @@ mod tests {
         assert_eq!(listed_keys.unwrap(), orig_keys);
     }
 
-    static PREFIX_DATA: Lazy<(
-        GridStore,
-        GridStore,
-        Vec<String>,
-        tempfile::TempDir,
-        tempfile::TempDir,
-    )> = Lazy::new(|| {
+    fn prefix_data() -> (GridStore, GridStore, Vec<String>, tempfile::TempDir, tempfile::TempDir) {
         let directory_with_boundaries: tempfile::TempDir = tempfile::tempdir().unwrap();
         let directory_without_boundaries: tempfile::TempDir = tempfile::tempdir().unwrap();
 
@@ -542,10 +536,10 @@ mod tests {
             directory_with_boundaries,
             directory_without_boundaries,
         )
-    });
+    }
 
     fn find_prefix_range(prefix: &str) -> (u32, u32) {
-        let phrases = &PREFIX_DATA.2;
+        let phrases = &prefix_data().2;
 
         let start =
             phrases.iter().enumerate().find(|(_, phrase)| phrase.starts_with(prefix)).unwrap().0;
@@ -562,12 +556,13 @@ mod tests {
 
     #[test]
     fn prefix_make_bins() {
-        Lazy::force(&PREFIX_DATA);
+        prefix_data();
     }
 
     #[test]
     fn prefix_test_with_bins() {
-        let (reader_with_boundaries, reader_without_boundaries) = (&PREFIX_DATA.0, &PREFIX_DATA.1);
+        let (reader_with_boundaries, reader_without_boundaries) =
+            (&prefix_data().0, &prefix_data().1);
         let starts_with_b = find_prefix_range("b");
 
         // query that we expect to use the pre-cached ranges
@@ -610,7 +605,8 @@ mod tests {
 
     #[test]
     fn prefix_test_no_bins() {
-        let (reader_with_boundaries, reader_without_boundaries) = (&PREFIX_DATA.0, &PREFIX_DATA.1);
+        let (reader_with_boundaries, reader_without_boundaries) =
+            (&prefix_data().0, &prefix_data().1);
         let starts_with_bc = find_prefix_range("bc");
 
         // query that we expect not to use the precached ranges
@@ -652,7 +648,8 @@ mod tests {
 
     #[test]
     fn prefix_test_coalesce() {
-        let (reader_with_boundaries, reader_without_boundaries) = (&PREFIX_DATA.0, &PREFIX_DATA.1);
+        let (reader_with_boundaries, reader_without_boundaries) =
+            (&prefix_data().0, &prefix_data().1);
         let starts_with_b = find_prefix_range("b");
         let starts_with_bc = find_prefix_range("bc");
 

@@ -11,9 +11,10 @@ lz4 = "1.23.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 failure = "0.1.5"
-rusoto_core = "0.40.0"
-rusoto_s3 = "0.40.0"
+rusoto_core = "0.42"
+rusoto_s3 = "0.42"
 fixedbitset = "0.3.0"
+futures = "0.3.21"
 
 [[bin]]
 name = "dump_store"

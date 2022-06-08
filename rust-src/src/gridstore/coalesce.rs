@@ -11,7 +11,6 @@ use indexmap::map::{Entry as IndexMapEntry, IndexMap};
 use itertools::Itertools;
 use min_max_heap::MinMaxHeap;
 use ordered_float::OrderedFloat;
-use rayon::prelude::*;
 use static_bushes::{KDBush, KDBushBuilder};
 
 use crate::gridstore::common::*;
@@ -448,7 +447,7 @@ pub const ONE_WORD_RANGE_QUOTA: usize = 40;
 pub const ALL_HIGH_ZOOM_RANGE_QUOTA: usize = 40;
 pub const ALL_HIGH_ZOOM_QUOTA: usize = 600;
 
-pub fn tree_coalesce<T: Borrow<GridStore> + Clone + Debug + Send + Sync>(
+pub fn tree_coalesce<T: Borrow<GridStore> + Clone + Debug>(
     stack_tree: &StackableTree<T>,
     match_opts: &MatchOpts,
 ) -> Result<Vec<CoalesceContext>, Error> {
@@ -614,7 +613,7 @@ pub fn tree_coalesce<T: Borrow<GridStore> + Clone + Debug + Send + Sync>(
         // phase 1: we get any data we don't already have in cache (and for single coalesce, we
         // just do the whole operation)
         let key_data: Vec<Result<_, Error>> = keys
-            .into_par_iter()
+            .into_iter()
             .map(|key_step| {
                 if key_step.is_single {
                     // this is a first-level node with no children, so short-circuit to a single-coalesce
@@ -691,7 +690,7 @@ pub fn tree_coalesce<T: Borrow<GridStore> + Clone + Debug + Send + Sync>(
         // fetched
         let chunk_results: Vec<Result<(Vec<CoalesceContext>, Vec<CoalesceStep<'_, T>>), Error>> =
             step_chunk
-                .into_par_iter()
+                .into_iter()
                 .map(|step| {
                     let mut relev_so_far = 0.0;
                     let subquery = step
@@ -973,7 +972,7 @@ pub fn collapse_phrasematches<T: Borrow<GridStore> + Clone + Debug>(
     phrasematch_results
 }
 
-pub fn stack_and_coalesce<T: Borrow<GridStore> + Clone + Debug + Send + Sync>(
+pub fn stack_and_coalesce<T: Borrow<GridStore> + Clone + Debug>(
     phrasematches: &Vec<PhrasematchSubquery<T>>,
     match_opts: &MatchOpts,
 ) -> Result<Vec<CoalesceContext>, Error> {

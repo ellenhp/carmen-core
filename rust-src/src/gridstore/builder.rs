@@ -1,3 +1,4 @@
+use rusqlite::Connection;
 use std::collections::hash_map::Entry as HmEntry;
 use std::collections::{btree_map::Entry, BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -5,7 +6,6 @@ use std::path::{Path, PathBuf};
 use failure::{Error, Fail};
 use itertools::Itertools;
 use morton::interleave_morton;
-use rocksdb::{Options, DB};
 use smallvec::{smallvec, SmallVec};
 
 use crate::gridstore::common::*;
@@ -182,11 +182,10 @@ impl GridStoreBuilder {
 
     /// Writes data to disk.
     pub fn finish(self) -> Result<(), Error> {
-        let mut opts = Options::default();
-        opts.set_disable_auto_compactions(true);
-        opts.create_if_missing(true);
+        let db = Connection::open(&self.path)?;
+        db.execute("CREATE TABLE blobs(key BLOB, value BLOB) IF NOT EXISTS;", [])?;
+        db.execute("CREATE UNIQUE INDEX unique_key ON blobs (key) IF NOT EXISTS", [])?;
 
-        let db = DB::open(&opts, &self.path)?;
         let mut db_key: Vec<u8> = Vec::with_capacity(MAX_KEY_LENGTH);
 
         let mut bin_seq = self.bin_boundaries.iter().cloned().peekable();
@@ -214,7 +213,9 @@ impl GridStoreBuilder {
                 copy_entries(&value, &mut grouped_entry);
                 // figure out the value
                 let db_data = get_encoded_value(value)?;
-                db.put(&db_key, &db_data)?;
+                db.execute("INSERT INTO blobs(key, value) VALUES(?, ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value;", [
+                    &db_key, &db_data
+                ])?;
             }
             if let Some(group_id) = group_id {
                 for (lang_set, builder_entry) in lang_set_map.into_iter() {
@@ -222,7 +223,9 @@ impl GridStoreBuilder {
                     let group_key = GridKey { phrase_id: group_id, lang_set };
                     group_key.write_to(TypeMarker::PrefixBin, &mut db_key)?;
                     let grouped_db_data = get_encoded_value(builder_entry)?;
-                    db.put(&db_key, &grouped_db_data)?;
+                    db.execute("INSERT INTO blobs(key, value) VALUES(?, ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value;", [
+                        &db_key, &grouped_db_data
+                    ])?;
                 }
             }
         }
@@ -232,10 +235,14 @@ impl GridStoreBuilder {
         for boundary in self.bin_boundaries {
             encoded_boundaries.extend_from_slice(&boundary.to_le_bytes());
         }
-        db.put("~BOUNDS", &encoded_boundaries)?;
+        db.execute("INSERT INTO blobs(key, value) VALUES(?, ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value;", [
+            "~BOUNDS".as_bytes(), &encoded_boundaries
+        ])?;
 
-        db.compact_range(None::<&[u8]>, None::<&[u8]>);
-        drop(db);
+        db.execute("pragma journal_mode = delete;", [])?;
+        db.execute("pragma page_size = 16384;", [])?;
+        db.execute("vacuum;", [])?;
+
         Ok(())
     }
 }
